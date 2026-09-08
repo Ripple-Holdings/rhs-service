@@ -194,6 +194,54 @@ r = c.get('/replies', headers=H)
 check('replies listed', len(r.get_json()['replies']) >= 1)
 check('replies need a key', c.get('/replies').status_code == 401)
 
+# ---- CORS ------------------------------------------------------------------
+# The till loads from file://, so its requests carry Origin: null or no Origin
+# at all. Both have to work, and the preflight has to answer before any of the
+# real calls are ever attempted.
+for path, origin in [('/send', 'null'), ('/replies', 'null'), ('/jobs', 'null'),
+                     ('/book', 'null'), ('/health', 'null'),
+                     ('/send', None), ('/replies', None)]:
+    hdrs = {'Access-Control-Request-Method': 'POST',
+            'Access-Control-Request-Headers': 'content-type,x-shop-key'}
+    if origin is not None:
+        hdrs['Origin'] = origin
+    r = c.options(path, headers=hdrs)
+    label = f'{path} (Origin: {origin or "absent"})'
+    check(f'preflight 200 on {label}', r.status_code == 200, r.status_code)
+    check(f'preflight allows the origin on {label}',
+          r.headers.get('Access-Control-Allow-Origin') == '*',
+          r.headers.get('Access-Control-Allow-Origin'))
+    allowed = (r.headers.get('Access-Control-Allow-Headers') or '').lower()
+    check(f'preflight allows both headers on {label}',
+          'x-shop-key' in allowed and 'content-type' in allowed, allowed)
+    methods = (r.headers.get('Access-Control-Allow-Methods') or '').upper()
+    check(f'preflight allows the methods on {label}',
+          all(m in methods for m in ('GET', 'POST', 'OPTIONS')), methods)
+
+# A preflight must never be the thing that authenticates: the browser sends it
+# without the key, and the key check belongs on the real request.
+check('preflight needs no key', c.options('/replies', headers={'Origin': 'null'}).status_code == 200)
+
+# The real calls, and the errors, have to be readable too.
+r = c.get('/replies', headers=H)
+check('a real response carries the origin header',
+      r.headers.get('Access-Control-Allow-Origin') == '*', r.headers.get('Access-Control-Allow-Origin'))
+r = c.get('/replies')
+check('a 401 is readable cross-origin',
+      r.status_code == 401 and r.headers.get('Access-Control-Allow-Origin') == '*', r.status_code)
+
+# Credentials must never be allowed alongside an open origin. This is the pair
+# that would actually be dangerous, so it is asserted rather than assumed.
+for path in ('/send', '/replies', '/health'):
+    r = c.options(path, headers={'Origin': 'null'})
+    check(f'no credentials allowed on {path}',
+          r.headers.get('Access-Control-Allow-Credentials') is None,
+          r.headers.get('Access-Control-Allow-Credentials'))
+
+# The key check itself is untouched by any of the above.
+check('a wrong key is still refused',
+      c.get('/replies', headers={'X-Shop-Key': 'not-the-key'}).status_code == 401)
+
 # ---- report ----------------------------------------------------------------
 print()
 bad = 0

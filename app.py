@@ -54,6 +54,47 @@ app = Flask(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Cross-origin requests
+# ---------------------------------------------------------------------------
+
+# The till is an Android WebView loading its page from file://, so its requests
+# arrive with `Origin: null` or with no Origin header at all. Neither can be
+# named in an allow-list, so the origin is left open deliberately rather than
+# by oversight.
+#
+# That is safe here only because of what is NOT sent back: no
+# Access-Control-Allow-Credentials, ever. The shop key travels in X-Shop-Key,
+# never in a cookie, so a browser sitting on some other page cannot borrow an
+# already-authenticated session the way it could with a credentialed request.
+# It would have to know the key, and if it knows the key it did not need a
+# browser. X-Shop-Key stays the only thing between a request and the data.
+#
+# Written by hand rather than with flask-cors: this is four headers, and a
+# dependency added to a service that sends a shop's messages is a dependency
+# somebody has to keep watching.
+CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Shop-Key',
+    # Without this the till preflights every single call, doubling each one.
+    'Access-Control-Max-Age': '86400',
+}
+
+
+@app.after_request
+def _cors(resp):
+    """Every response, including the 401s and the automatic OPTIONS replies.
+
+    A 401 the browser cannot read is a till that says "could not reach the
+    service" when the truth is "wrong key", so the error paths need these
+    headers just as much as the successful ones do.
+    """
+    for name, value in CORS_HEADERS.items():
+        resp.headers.setdefault(name, value)
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
 
