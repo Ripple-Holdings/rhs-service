@@ -27,7 +27,9 @@ Environment:
     TWILIO_SMS_FROM       the UK mobile number replies come back to
     TWILIO_WEBHOOK_URL    optional, only if the signature check needs forcing
     SENDGRID_API_KEY      optional, no key means email quietly does not send
-    MAIL_FROM             the address customer emails come from
+    MAIL_FROM             the address customer emails come from (must be a verified SendGrid sender)
+    MAIL_FROM_NAME        the name shown in the customer's inbox, e.g. RHS Jewellers
+    MAIL_REPLY_TO         where a customer's reply goes, e.g. the shop's own mailbox
 """
 
 import hmac
@@ -49,6 +51,8 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get('DATABASE_URL')
 API_KEY = (os.environ.get('RHS_API_KEY') or '').strip()
 MAIL_FROM = (os.environ.get('MAIL_FROM') or 'repairs@rhsjewellers.com').strip()
+MAIL_FROM_NAME = (os.environ.get('MAIL_FROM_NAME') or 'RHS Jewellers').strip()
+MAIL_REPLY_TO = (os.environ.get('MAIL_REPLY_TO') or '').strip()
 
 app = Flask(__name__)
 
@@ -323,7 +327,8 @@ def _send_email(to_addr, subject, body):
                      'Content-Type': 'application/json'},
             json={
                 'personalizations': [{'to': [{'email': to_addr}]}],
-                'from': {'email': MAIL_FROM},
+                'from': {'email': MAIL_FROM, 'name': MAIL_FROM_NAME},
+                **({'reply_to': {'email': MAIL_REPLY_TO, 'name': MAIL_FROM_NAME}} if MAIL_REPLY_TO else {}),
                 'subject': subject or 'Your repair',
                 'content': [{'type': 'text/plain', 'value': body or ''}],
             },
