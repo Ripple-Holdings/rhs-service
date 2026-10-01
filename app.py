@@ -27,9 +27,7 @@ Environment:
     TWILIO_SMS_FROM       the UK mobile number replies come back to
     TWILIO_WEBHOOK_URL    optional, only if the signature check needs forcing
     SENDGRID_API_KEY      optional, no key means email quietly does not send
-    MAIL_FROM             the address customer emails come from (must be a verified SendGrid sender)
-    MAIL_FROM_NAME        the name shown in the customer's inbox, e.g. RHS Jewellers
-    MAIL_REPLY_TO         where a customer's reply goes, e.g. the shop's own mailbox
+    MAIL_FROM             the address customer emails come from
 """
 
 import hmac
@@ -51,8 +49,6 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get('DATABASE_URL')
 API_KEY = (os.environ.get('RHS_API_KEY') or '').strip()
 MAIL_FROM = (os.environ.get('MAIL_FROM') or 'repairs@rhsjewellers.com').strip()
-MAIL_FROM_NAME = (os.environ.get('MAIL_FROM_NAME') or 'RHS Jewellers').strip()
-MAIL_REPLY_TO = (os.environ.get('MAIL_REPLY_TO') or '').strip()
 
 app = Flask(__name__)
 
@@ -273,12 +269,22 @@ def put_jobs():
         return jsonify({'error': 'jobs must be a list'}), 400
 
     saved = 0
+    removed = 0
     conn = _db()
     cur = conn.cursor()
     try:
         for job in jobs:
             ref = (job or {}).get('ref')
             if not ref:
+                continue
+            # A job the till has deleted is pushed up once with a deleted
+            # flag. It is removed here outright, along with the record of
+            # messages sent on it, rather than kept as a flagged row that
+            # every client would have to know to hide.
+            if job.get('deleted'):
+                cur.execute('DELETE FROM messages WHERE ref = %s', (ref,))
+                cur.execute('DELETE FROM jobs WHERE ref = %s', (ref,))
+                removed += 1
                 continue
             cur.execute(
                 "INSERT INTO jobs (ref, data, stage, updated_at) "
@@ -301,14 +307,14 @@ def put_jobs():
     finally:
         cur.close()
         conn.close()
-    return jsonify({'ok': True, 'saved': saved})
+    return jsonify({'ok': True, 'saved': saved, 'removed': removed})
 
 
 # ---------------------------------------------------------------------------
 # Sending
 # ---------------------------------------------------------------------------
 
-def _send_email(to_addr, subject, body, attachments=None):
+def _send_email(to_addr, subject, body):
     """SendGrid, or quietly nothing if it is not configured.
 
     No key is not an error. A counter must not fail to book a job in because
@@ -327,11 +333,9 @@ def _send_email(to_addr, subject, body, attachments=None):
                      'Content-Type': 'application/json'},
             json={
                 'personalizations': [{'to': [{'email': to_addr}]}],
-                'from': {'email': MAIL_FROM, 'name': MAIL_FROM_NAME},
-                **({'reply_to': {'email': MAIL_REPLY_TO, 'name': MAIL_FROM_NAME}} if MAIL_REPLY_TO else {}),
+                'from': {'email': MAIL_FROM},
                 'subject': subject or 'Your repair',
                 'content': [{'type': 'text/plain', 'value': body or ''}],
-                **({'attachments': attachments} if attachments else {}),
             },
             timeout=10)
         if resp.status_code in (200, 201, 202):
@@ -359,26 +363,10 @@ def send():
     ref = p.get('ref')
     kind = p.get('kind')
 
-    # Optional attachments, e.g. a spreadsheet the till is emailing out.
-    # Base64 content, capped so a mistake cannot post megabytes through here.
-    attachments = []
-    for att in (p.get('attachments') or [])[:3]:
-        if not isinstance(att, dict):
-            continue
-        content = str(att.get('content') or '')
-        if not content or len(content) > 2_000_000:
-            return jsonify({'error': 'attachment missing or too large'}), 400
-        attachments.append({
-            'content': content,
-            'filename': str(att.get('filename') or 'attachment')[:120],
-            'type': str(att.get('type') or 'application/octet-stream')[:80],
-            'disposition': 'attachment',
-        })
-
     if channel == 'text':
         ok, err = send_sms(to_addr, body)
     elif channel == 'email':
-        ok, err = _send_email(to_addr, subject, body, attachments)
+        ok, err = _send_email(to_addr, subject, body)
     else:
         return jsonify({'error': 'channel must be text or email'}), 400
 
